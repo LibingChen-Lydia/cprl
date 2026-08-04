@@ -210,3 +210,58 @@ marimo/_lsp/
 __marimo__/
 time_series_library/time_series_library/dataset/electricity/electricity.csv
 time_series_library/time_series_library/dataset/traffic/traffic.csv
+
+# Project-generated experiment artifacts
+all_results/
+results/
+v_results/
+analysis_figures/
+experiment_logs/
+results_sanity*/
+results_cache_sanity*/
+results_ode_cmp*/
+forecast_cache_seed*/
+*.npz
+*.npy
+*.pkl
+*.joblib
+*.xlsx
+*.xls
+
+# Local benchmark data
+dataset/
+Datasets/
+time_series_library/dataset/
+time_series_library/time_series_library/dataset/
+
+# Local archives and generated figures
+*.tgz
+*.tar.gz
+*.zip
+*.ipynb
+*_pareto.ipynb
+*_plot.ipynb
+*_sensitivity*.ipynb
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.svg
+
+# Local paper drafts and Overleaf exports
+ACP_extensions1.tex
+appendix_backbone_baseline_tables.tex
+overleaf/
+
+# Local assistant/editor state
+.memsearch/
+AGENTS.md
+
+# Local experiment orchestration scripts
+scripts/remote_*.sh
+scripts/rerun_*
+scripts/wait_then_*
+scripts/run_exchange_rate_all_baselines.sh
+scripts/run_missing_targets_parallel.py
+scripts/run_new_dataset_baselines.py
+scripts/run_cache_export_remote.py

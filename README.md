@@ -6,18 +6,16 @@ Adaptive Conformal Prediction via Frequency-Domain Wasserstein Calibration and L
 
 ## 1. Overview
 
-This repository implements multiple **Conformal Prediction (CP)** methods for **time series forecasting**, with a focus on:
+This repository contains the experimental implementation for **CPRL**, a conformal prediction framework for non-stationary time series forecasting. The standard experimental protocol separates point forecasting from conformal calibration: first train a base forecaster and export its validation/test predictions as a deterministic forecast cache; then run CPRL and the conformal baselines on the same cached forecasts.
 
-- **Adaptive Conformal Prediction (ACP)**: Dynamically adjusts the coverage control signal over time.
-- Frequency-domain Wasserstein calibration combined with latent state modeling.
-- Support for various CP baselines: `standard`, `aci`, `agaci`, `nex`, `cqr`, `dfpi`, `enbpi`, `cptc`, `hopcpt`, etc.
-- Flexibility to use both simple linear models and neural network models from `time_series_library` as the **base point-forecasting model**.
+The main components are:
 
-The main entry point is `run.py`. You can perform the full experimental pipeline via command-line arguments:
-- Load a univariate time series from a CSV file.
-- Construct lagged features and split into train / calibration / test sets.
-- Train the base forecasting model.
-- Calibrate and evaluate the CP method online, outputting numerical results and visualizations.
+- Regime-aware adaptive conformal calibration with spectral drift sensing.
+- Baselines including `aci`, `agaci`, `nex`, `cqr`, `dfpi`, `enbpi`, `cptc`, `hopcpt`, `spci`, `cpid`, and `bellman`.
+- Cache-based conformal evaluation from fixed base-forecaster predictions, which keeps CP comparisons independent of forecasting retraining noise.
+- Optional integration with forecasting architectures under `time_series_library/`.
+
+The main CLI entry point is `run_exp.py`.
 
 ---
 
@@ -39,13 +37,7 @@ Install using pip:
 pip install -r requirements.txt
 ```
 
-If `requirements.txt` is not available, manually install the core packages:
-
-```bash
-pip install numpy pandas torch matplotlib
-```
-
-### 2.2 Optional: time_series_library
+### 2.2 Optional Forecasting Backbones
 
 To use advanced deep learning models (instead of the default linear model) as the base forecaster:
 
@@ -81,6 +73,8 @@ Notes:
 - Use `--lags` to control the window size: the series is transformed into supervised samples `(X, y)`, where `X` is a lagged window of length `lags` and `y` is the next-step target.
 - Data is split **chronologically** into train / calibration / test (no shuffling).
 
+Benchmark datasets are not included in the repository. Keep local datasets outside version control and pass their paths through `--data_path`.
+
 ---
 
 ## 4. Quick Start
@@ -90,7 +84,7 @@ Notes:
 Run with the default linear base model and ACP mode with online updates:
 
 ```bash
-python run.py \
+python run_exp.py \
   --data_path path/to/your_series.csv \
   --lags 96 \
   --train_ratio 0.6 \
@@ -110,65 +104,116 @@ Key arguments (commonly used):
 | `--train_ratio` | Proportion of data for training | `0.6` |
 | `--calib_ratio` | Proportion of data for calibration | `0.2` |
 | `--alpha` | Nominal significance level; target coverage = `1 - alpha` | `0.1` |
-| `--cp_mode` | CP method: `acp`, `standard`, `aci`, `agaci`, `nex`, `cqr`, `dfpi`, `enbpi`, `cptc`, `hopcpt` | `acp` |
-| `--run_mode` | `online` (update CP during test) or `eval` (no update, inference only) | `online` |
+| `--cp_mode` | CP method: `acp`, `aci`, `agaci`, `nex`, `cqr`, `dfpi`, `enbpi`, `cptc`, `hopcpt`, `spci`, `cpid`, `bellman` | `acp` |
+| `--run_mode` | `online` or `offline` conformal evaluation | `online` |
 | `--results_dir` | Directory for numerical results | `./results` |
 
-### 4.2 Choosing the Base Model
+### 4.2 Standard Two-Stage Protocol
 
-- Use the built-in linear model (default):
+For paper-scale experiments, first train the base forecaster and export its predictions:
 
 ```bash
-python run.py --data_path path/to/series.csv --base_model linear
+python scripts/run_tsl_forecast_cache.py \
+  --model_id ETTh1_cache \
+  --model DLinear \
+  --data custom \
+  --root_path time_series_library/dataset/ETT-small/ \
+  --data_path ETTh1.csv \
+  --features MS \
+  --target OT \
+  --seq_len 96 \
+  --label_len 48 \
+  --pred_len 96 \
+  --seed 2021
 ```
 
-- Use a registered model from `time_series_library` (e.g., `Autoformer`):
+This creates a file of the form:
+
+```text
+forecast_cache_seed2021/<forecast-setting>/forecast_full.npz
+```
+
+Then run conformal calibration on the fixed forecast cache:
 
 ```bash
-python run.py \
-  --data_path path/to/series.csv \
-  --base_model Autoformer
+python run_exp.py \
+  --data_path time_series_library/dataset/ETT-small/ETTh1.csv \
+  --cache_path forecast_cache_seed2021/<forecast-setting>/forecast_full.npz \
+  --base_model DLinear \
+  --cp_mode acp \
+  --run_mode online \
+  --lags 96 \
+  --x_lag 96 \
+  --alpha 0.1 \
+  --results_dir results/ETTh1_DLinear_acp
+```
+
+Use the same `--cache_path` when comparing different conformal methods. This ensures that differences in coverage and interval width come from the conformal procedure rather than from different point forecasts.
+
+Forecast caches are generated artifacts and are not tracked by Git. If precomputed caches are needed for exact reproduction, host them externally and place them under `forecast_cache_seed*/` after download.
+
+### 4.3 Forecast Cache Format
+
+The conformal runner expects an `.npz` file with validation and test predictions. The required arrays are:
+
+| Key | Description |
+|-----|-------------|
+| `val_y_true` or `val_y_true_full` | Ground-truth values on the validation/calibration split. |
+| `val_y_pred` or `val_y_pred_full` | Base-forecaster predictions on the validation/calibration split. |
+| `test_y_true` or `test_y_true_full` | Ground-truth values on the test split. |
+| `test_y_pred` or `test_y_pred_full` | Base-forecaster predictions on the test split. |
+
+Optional arrays `val_time_idx` and `test_time_idx` are used to sort predictions chronologically when present. Lag features for regime detection are rebuilt from past true values using `--x_lag`.
+
+### 4.4 One-Step Sanity Runs
+
+For quick local checks, `run_exp.py` can also train the built-in linear forecaster and run conformal calibration in one command:
+
+```bash
+python run_exp.py --data_path path/to/series.csv --base_model linear
+```
+
+This mode is useful for smoke tests, but benchmark comparisons should use the two-stage cache protocol above.
+
+### 4.5 Choosing the Base Model
+
+Use a registered model from `time_series_library` when generating forecast caches, for example:
+
+```bash
+python scripts/run_tsl_forecast_cache.py \
+  --model_id ETTh1_cache \
+  --model Autoformer \
+  --root_path time_series_library/dataset/ETT-small/ \
+  --data_path ETTh1.csv
 ```
 
 If the specified model is not in `MODEL_REGISTRY`, an error is raised showing available options.
 
-### 4.3 Device Selection (CPU / CUDA / MPS)
+### 4.6 Device Selection
 
 | Argument | Description |
 |----------|-------------|
-| `--use_gpu` | Enable GPU usage (only effective when `--gpu_type cuda` and CUDA is available) |
-| `--gpu` | GPU device index | `0` |
-| `--gpu_type` | Backend: `cuda`, `mps`, or `cpu` | `cuda` |
+| `--use_gpu` | Enable CUDA when available. Use `0` for CPU-only execution and `1` for CUDA-enabled execution. |
 
 Example: Use CUDA GPU 0:
 
 ```bash
-python run.py \
+python run_exp.py \
   --data_path path/to/series.csv \
-  --use_gpu \
-  --gpu_type cuda \
-  --gpu 0
-```
-
-On macOS with Apple Silicon, you can try MPS:
-
-```bash
-python run.py \
-  --data_path path/to/series.csv \
-  --gpu_type mps
+  --use_gpu 1
 ```
 
 ---
 
 ## 5. Outputs and Visualizations
 
-After execution, the following outputs are generated (paths may vary slightly based on the `setting` string):
+After execution, numerical outputs are written under `results_dir`, while diagnostic figures are written under `v_results/`.
 
 ### 5.1 Numerical Results
 
 - `results/conformal_results.csv`
 - `results/adaptive_conformal_results.csv`
-- Corresponding Excel files (via `ResultLogger.to_excel()`) for convenient comparison across experiments.
+- Corresponding Excel files may be generated for local inspection.
 
 ### 5.2 Dynamics Logs
 
@@ -193,12 +238,13 @@ Key modules relevant to the main experimental workflow:
 
 | File | Description |
 |------|-------------|
-| `run.py` | Command-line entry point: parses arguments, seeds, device selection, instantiates `ExpConformal`, and invokes `run()`. |
-| `exp/exp/exp_basic.py` | `ExpBasic`: Base experiment class. Loads CSV, normalizes, constructs lagged features, chronological split, and builds `DataLoader`s. |
-| `exp/exp/exp_conformal.py` | `ExpConformal(ExpBasic)`: Full pipeline. Defines base model (linear or neural), builds CP predictor via `build_conformal_predictor`, implements `train_model`, `calibrate`, and `evaluate`. Computes metrics (coverage, width, CES, RCS) and saves plots. |
+| `run_exp.py` | Command-line entry point: parses arguments, configures imports, instantiates `ExpConformal`, and invokes `run()`. |
+| `exp/exp_basic.py` | `ExpBasic`: Base experiment class. Loads CSV, normalizes, constructs lagged features, chronological split, and builds `DataLoader`s. |
+| `exp/exp_conformal.py` | `ExpConformal(ExpBasic)`: Full pipeline. Defines base-model or cache-based evaluation, builds CP predictor via `build_conformal_predictor`, computes metrics, and saves outputs. |
 | `src/utils.py` | Data preprocessing, metric computation (coverage, width, CES, RCS, worst-window coverage), and print utilities. |
 | `src/base_conformal/` | Implementations and builders for various conformal predictors. |
 | `src/result_logger.py` | Logging to CSV and Excel. |
+| `scripts/run_tsl_forecast_cache.py` | Trains a `time_series_library` forecaster and exports deterministic forecast caches. |
 
 ---
 
@@ -207,11 +253,11 @@ Key modules relevant to the main experimental workflow:
 Recommended workflow:
 
 1. Prepare a univariate CSV time series (ensure sufficient length for `lags + train + calib + test` samples).
-2. Choose an appropriate `--lags` (e.g., 48, 96, 168 for hourly data).
-3. Set `--train_ratio` and `--calib_ratio` so that all splits have adequate samples.
-4. Select `--cp_mode` and `--alpha` based on your desired CP method and target coverage.
-5. Run `python run.py` with your chosen configuration.
-6. Inspect results in `results/` (numerical) and `v_results/` (visualizations).
+2. Train the base forecaster with a fixed seed and export `forecast_full.npz`.
+3. Run each conformal method with the same `--cache_path`.
+4. Compare coverage, width, and stability metrics from the generated result files.
+
+Generated results, cached forecasts, logs, and exploratory figures are intentionally excluded from version control. Commit only source code, scripts, lightweight configuration, and documentation.
 
 ---
 
@@ -221,10 +267,8 @@ If you use this code in your research, please cite:
 
 > Adaptive Conformal Prediction via Frequency-Domain Wasserstein Calibration and Latent State Modeling
 
-*(Add BibTeX or official citation format here if available)*
-
 ---
 
 ## 9. License
 
-*(Add license information here, e.g., MIT, Apache 2.0, etc.)*
+This repository is released under the license specified in `LICENSE`.
