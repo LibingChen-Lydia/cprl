@@ -1090,8 +1090,8 @@ class AdaptiveConformalPredictor:
             s = 0.0
             if len(self.prediction_errors) >= int(self.config.window_size):
                 window = np.asarray(list(self.prediction_errors)[-int(self.config.window_size):], float)
-                split = max(1, len(window) // 2)
-                s = float(self._drift.score(window[:split], window[split:]))
+                half = len(window) // 2
+                s = float(self._drift.score(window[:half], window[half:]))
             self.calib_s_global.append(s)
             self.calib_s_by_regime[rid].append(float(s))
 
