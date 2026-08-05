@@ -6,6 +6,7 @@ import sys
 import copy
 import inspect
 import argparse
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Deque, Dict, List, Optional, Tuple
@@ -142,6 +143,7 @@ def get_args():
     parser.add_argument("--results_dir", type=str, default="results")
     parser.add_argument("--conformal_csv_path", type=str, default=os.path.join("results", "conformal_results.csv"))
     parser.add_argument("--adaptive_csv_path", type=str, default=os.path.join("results", "adaptive_conformal_results.csv"))
+    parser.add_argument("--base_seed", type=int, default=None)
 
     # diagnostics / windows
     parser.add_argument("--unc_window", type=int, default=256)
@@ -168,21 +170,17 @@ def get_args():
     parser.add_argument("--calib_window_size", type=int, default=200)
     parser.add_argument("--min_calib_size", type=int, default=30)
     parser.add_argument("--min_regime_calib_size", type=int, default=50)
-    parser.add_argument("--min_regime_eval_size", type=int, default=30)
     parser.add_argument("--min_regime_cov_size", type=int, default=30)
     parser.add_argument("--coverage_window", type=int, default=50)
-    parser.add_argument("--lambda_spectral", type=float, default=0.5)
     parser.add_argument("--aci_gamma_base", type=float, default=0.05)
     parser.add_argument("--aci_spectral_beta", type=float, default=1.0)
     parser.add_argument("--spectral_score_cap", type=float, default=2.0)
     parser.add_argument("--wass_reweight", type=int, default=1)
     parser.add_argument("--wass_temperature", type=float, default=0.1)
     parser.add_argument("--use_cqr_score", type=int, default=1)
-    parser.add_argument("--fallback_to_price_regime", type=int, default=0)
     parser.add_argument("--cqr_refit_every", type=int, default=50)
     parser.add_argument("--cqr_l2", type=float, default=0.1)
     parser.add_argument("--cqr_split_ratio", type=float, default=0.6)
-    parser.add_argument("--use_legacy_buffer_cqr", type=int, default=0)
     parser.add_argument("--cqr_r_clip", type=float, default=8.0)
     parser.add_argument("--cqr_x_clip_quantile", type=float, default=0.01)
     parser.add_argument("--cqr_x_std_clip", type=float, default=6.0)
@@ -192,40 +190,13 @@ def get_args():
     parser.add_argument("--unc_floor_scale", type=float, default=0.5)
     parser.add_argument("--regime_on_residuals", type=int, default=1)
     parser.add_argument("--warmstart_blend", type=float, default=0.3)
-    parser.add_argument("--regime_method", type=str, default="feature", choices=["feature", "ode"])
-    parser.add_argument("--ode_window_size", type=int, default=48)
-    parser.add_argument("--ode_smooth_window", type=int, default=3)
-    parser.add_argument("--ode_use_residuals", type=int, default=1)
-    parser.add_argument("--ode_ic", type=str, default="bic", choices=["bic"])
-    parser.add_argument("--ode_cond_max", type=float, default=1e6)
-    parser.add_argument("--ode_stable_only", type=int, default=1)
-    parser.add_argument("--ode_min_samples", type=int, default=16)
-    parser.add_argument("--ode_cluster_eps_order0", type=float, default=0.55)
-    parser.add_argument("--ode_cluster_eps_order1", type=float, default=0.9)
-    parser.add_argument("--ode_cluster_eps_order2", type=float, default=1.1)
-    parser.add_argument("--ode_cluster_min_samples", type=int, default=6)
-    parser.add_argument("--ode_refit_every", type=int, default=25)
-    parser.add_argument("--ode_bootstrap_size", type=int, default=60)
-    parser.add_argument("--ode_assignment_threshold", type=float, default=2.0)
-    parser.add_argument("--ode_order_switch_margin", type=float, default=2.0)
-    parser.add_argument("--ode_order_switch_patience", type=int, default=3)
-    parser.add_argument("--ode_use_feature_filter", type=int, default=0)
-    parser.add_argument("--ode_filter_process_var", type=float, default=0.05)
-    parser.add_argument("--ode_filter_measure_var", type=float, default=0.5)
-    parser.add_argument("--ode_filter_init_var", type=float, default=1.0)
-    parser.add_argument("--ode_filter_reset_on_order_change", type=int, default=1)
-    parser.add_argument("--k_update_every", type=int, default=20)
-    parser.add_argument("--k_min", type=float, default=1e-3)
-    parser.add_argument("--k_max", type=float, default=100.0)
-    parser.add_argument("--k_fallback", type=float, default=1.0)
     parser.add_argument("--alpha_min", type=float, default=0.01)
     parser.add_argument("--alpha_max", type=float, default=0.3)
     parser.add_argument("--adaptive_alpha", type=int, default=1)
-    parser.add_argument("--cem_alpha_min", type=float, default=None)
-    parser.add_argument("--cem_alpha_max", type=float, default=None)
 
     # baselines
     parser.add_argument("--aci_T0", type=int, default=200)
+    parser.add_argument("--aci_gamma", type=float, default=None)
     parser.add_argument("--cp_lr", type=float, default=0.01)
     parser.add_argument("--aci_warm_start", type=int, default=30)
     parser.add_argument("--aci_fallback_width", type=float, default=3.0)
@@ -238,6 +209,14 @@ def get_args():
     parser.add_argument("--cqr_standardize_x", type=int, default=1)
     parser.add_argument("--cqr_sequential_split", type=int, default=0)
     parser.add_argument("--cqr_fallback_width", type=float, default=3.0)
+    parser.add_argument("--spci_past_window", type=int, default=10)
+    parser.add_argument("--spci_n_estimators", type=int, default=100)
+    parser.add_argument("--spci_max_depth", type=int, default=5)
+    parser.add_argument("--spci_max_features", type=float, default=1.0)
+    parser.add_argument("--spci_min_samples_leaf", type=int, default=1)
+    parser.add_argument("--spci_beta_grid", type=int, default=101)
+    parser.add_argument("--spci_refit_every", type=int, default=1)
+    parser.add_argument("--spci_fallback_width", type=float, default=3.0)
 
     args = parser.parse_args()
 
@@ -246,21 +225,11 @@ def get_args():
     args.use_gpu = bool(args.use_gpu)
     args.wass_reweight = bool(args.wass_reweight)
     args.use_cqr_score = bool(args.use_cqr_score)
-    args.use_legacy_buffer_cqr = bool(args.use_legacy_buffer_cqr)
     args.regime_on_residuals = bool(args.regime_on_residuals)
-    args.ode_use_residuals = bool(args.ode_use_residuals)
-    args.ode_stable_only = bool(args.ode_stable_only)
-    args.ode_use_feature_filter = bool(args.ode_use_feature_filter)
-    args.ode_filter_reset_on_order_change = bool(args.ode_filter_reset_on_order_change)
     args.adaptive_alpha = bool(args.adaptive_alpha)
     args.ablation_explicit = ("--ablation_mode" in sys.argv)
 
     # Legacy aliases kept for backwards compatibility only.
-    if args.cem_alpha_min is not None and "--alpha_min" not in sys.argv:
-        args.alpha_min = args.cem_alpha_min
-    if args.cem_alpha_max is not None and "--alpha_max" not in sys.argv:
-        args.alpha_max = args.cem_alpha_max
-
     if args.target_coverage is None:
         args.target_coverage = 1.0 - float(args.alpha)
 
@@ -1348,6 +1317,7 @@ class ExpConformal(ExpBasic):
             adaptive_csv_path=adaptive_csv,
         )
 
+        run_start = time.perf_counter()
         cache_path = getattr(self.args, "cache_path", None)
         if cache_path:
             cache_data = load_cache_for_conformal(
@@ -1378,7 +1348,14 @@ class ExpConformal(ExpBasic):
             base_model = getattr(self.args, "base_model", "cache" if cache_path else "linear")
             lags = getattr(self.data_cfg, "lags", getattr(self.args, "x_lag", getattr(self.args, "lags", "NA")))
             seed = getattr(self.args, "seed", "NA")
-            setting = f"{dataset_name}_lags{lags}_model{base_model}_cp{cp_mode}_mode{run_mode}_seed{seed}"
+            base_seed = getattr(self.args, "base_seed", None)
+            if base_seed is None:
+                setting = f"{dataset_name}_lags{lags}_model{base_model}_cp{cp_mode}_mode{run_mode}_seed{seed}"
+            else:
+                setting = (
+                    f"{dataset_name}_lags{lags}_model{base_model}"
+                    f"_cp{cp_mode}_mode{run_mode}_base{base_seed}_seed{seed}"
+                )
             if is_ablation_run:
                 setting = f"{setting}_ABL{ablation_mode}"
             setting_suffix = str(getattr(self.args, "setting_suffix", "") or "").strip()
@@ -1411,6 +1388,7 @@ class ExpConformal(ExpBasic):
                 w_ref=w_ref_calib,
             )
 
+        runtime_seconds = float(time.perf_counter() - run_start)
         coverage_bias = float(coverage) - float(target_coverage)
         abs_coverage_gap = float(abs(coverage_bias))
         under_coverage_gap = float(max(float(target_coverage) - float(coverage), 0.0))
@@ -1426,6 +1404,7 @@ class ExpConformal(ExpBasic):
             setting=setting,
             cp_mode=cp_mode,
             target_coverage=float(target_coverage),
+            runtime_seconds=runtime_seconds,
             metrics={
                 "coverage": float(coverage),
                 "abs_coverage_gap": float(abs_coverage_gap),
@@ -1465,6 +1444,7 @@ class ExpConformal(ExpBasic):
                 setting=setting,
                 cp_mode=cp_mode,
                 target_coverage=float(target_coverage),
+                runtime_seconds=runtime_seconds,
                 adaptive_metrics={
                     "worst_window_coverage": worst_cov,
                     "width_step_mean": width_step_mean,

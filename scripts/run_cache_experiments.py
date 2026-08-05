@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -21,7 +22,7 @@ LOG_DIR = ROOT / "experiment_logs"
 COMMAND_LOG_DIR = LOG_DIR / "commands"
 REBUILD_BASELINES = ROOT / "scripts" / "rebuild_baseline_results.py"
 
-SEEDS = [2021, 2022, 2023, 2024, 2025]
+BASE_SEEDS = [2021, 2022, 2023, 2024, 2025]
 BASE_FORECASTERS = [
     "Autoformer",
     "Crossformer",
@@ -34,8 +35,8 @@ BASE_FORECASTERS = [
     "Transformer",
     "TSMixer",
 ]
-BASELINE_MODES = ["acp", "aci", "agaci", "dfpi", "hopcpt", "nex"]
-ABLATION_MODES = ["M0", "M1", "M2", "M3", "M4"]
+BASELINE_MODES = ["acp", "aci", "agaci", "dfpi", "spci", "hopcpt", "nex", "cpid", "bellman"]
+ABLATION_MODES = ["M0", "M1", "M2", "M3", "M4", "M5"]
 DATASET_PATHS = {
     "exchange_rate": "dataset/exchange_rate/exchange_rate.csv",
     "ETTh1": "time_series_library/dataset/ETT-small/ETTh1.csv",
@@ -44,13 +45,15 @@ DATASET_PATHS = {
     "ETTm2": "time_series_library/dataset/ETT-small/ETTm2.csv",
     "weather": "time_series_library/dataset/weather/weather.csv",
 }
-RUN_HISTORY_CSV = LOG_DIR / "run_history.csv"
-RUN_HISTORY_MD = LOG_DIR / "run_history.md"
+NEW_DATASET_MANIFEST = ROOT / "time_series_library" / "dataset" / "new_benchmarks" / "manifest.csv"
+RUN_HISTORY_CSV = LOG_DIR / "run_history_v2.csv"
+RUN_HISTORY_MD = LOG_DIR / "run_history_v2.md"
 RUN_HISTORY_HEADER = [
     "timestamp",
     "phase",
     "dataset",
-    "cache_seed",
+    "base_seed",
+    "cp_seed",
     "cache_path",
     "base_model",
     "cp_mode",
@@ -72,7 +75,8 @@ class Job:
     phase: str
     dataset: str
     data_path: str
-    cache_seed: int
+    base_seed: int
+    cp_seed: int
     cache_path: Optional[Path]
     base_model: str
     cp_mode: str
@@ -106,7 +110,8 @@ def append_log(row: Dict[str, str]) -> None:
         f"## {row['timestamp']}",
         f"- phase: {row['phase']}",
         f"- dataset: {row['dataset']}",
-        f"- cache_seed: {row.get('cache_seed', '')}",
+        f"- base_seed: {row.get('base_seed', '')}",
+        f"- cp_seed: {row.get('cp_seed', '')}",
         f"- base_model: {row['base_model']}",
         f"- cp_mode: {row['cp_mode']}",
         f"- ablation_mode: {row.get('ablation_mode', '')}",
@@ -126,11 +131,19 @@ def append_log(row: Dict[str, str]) -> None:
 def dataset_to_path(dataset: str) -> str:
     if dataset in DATASET_PATHS:
         return DATASET_PATHS[dataset]
+    if NEW_DATASET_MANIFEST.exists():
+        try:
+            manifest = pd.read_csv(NEW_DATASET_MANIFEST, dtype=str).fillna("")
+            hit = manifest[manifest["dataset"] == dataset]
+            if not hit.empty and hit.iloc[0].get("data_path"):
+                return str(hit.iloc[0]["data_path"])
+        except Exception:
+            pass
     return dataset
 
 
-def discover_cache(cache_seed: int, dataset: str, model: str) -> Optional[Path]:
-    root = ROOT / f"forecast_cache_seed{cache_seed}"
+def discover_cache(base_seed: int, dataset: str, model: str) -> Optional[Path]:
+    root = ROOT / f"forecast_cache_seed{base_seed}"
     if not root.exists():
         return None
 
@@ -140,21 +153,26 @@ def discover_cache(cache_seed: int, dataset: str, model: str) -> Optional[Path]:
     }
     dataset_keys = dataset_aliases.get(dataset_l, [dataset_l])
     model_l = model.lower()
+    setting_re = re.compile(
+        r"^long_term_forecast_(?P<dataset>.+?)_cache_(?P<model>[^_]+)_.+$",
+        re.IGNORECASE,
+    )
     candidates: List[Path] = []
     for path in root.rglob("forecast_full.npz"):
-        s = str(path).lower()
-        if any(key in s for key in dataset_keys) and model_l in s and "_cache_" in s:
+        parent_name = path.parent.name
+        m = setting_re.match(parent_name)
+        if not m:
+            continue
+
+        parsed_dataset = m.group("dataset").lower()
+        parsed_model = m.group("model").lower()
+        if parsed_dataset in dataset_keys and parsed_model == model_l:
             candidates.append(path)
 
     if not candidates:
         return None
 
-    preferred = [
-        p for p in candidates
-        if f"_cache_{model_l}_" in str(p).lower()
-        and any(key in str(p).lower() for key in dataset_keys)
-    ]
-    chosen = sorted(preferred or candidates, key=lambda p: (len(str(p)), str(p)))[0]
+    chosen = sorted(candidates, key=lambda p: (len(str(p)), str(p)))[0]
     return chosen
 
 
@@ -162,7 +180,7 @@ def build_setting(job: Job) -> str:
     dataset_name = os.path.basename(job.data_path)
     setting = (
         f"{dataset_name}_lags{job.lags}_model{job.base_model}"
-        f"_cp{job.cp_mode}_mode{job.run_mode}_seed{job.cache_seed}"
+        f"_cp{job.cp_mode}_mode{job.run_mode}_base{job.base_seed}_seed{job.cp_seed}"
     )
     if job.ablation_mode:
         setting = f"{setting}_ABL{job.ablation_mode}"
@@ -197,7 +215,8 @@ def command_for_job(job: Job) -> List[str]:
         "--cp_mode", job.cp_mode,
         "--run_mode", job.run_mode,
         "--alpha", str(job.alpha),
-        "--seed", str(job.cache_seed),
+        "--base_seed", str(job.base_seed),
+        "--seed", str(job.cp_seed),
         "--results_dir", str(job.results_dir),
         "--conformal_csv_path", str(csv_paths["conformal"]),
         "--adaptive_csv_path", str(csv_paths["adaptive"]),
@@ -276,7 +295,8 @@ def has_success_history(job: Job) -> bool:
         (df["status"] == "success")
         & (df["phase"] == job.phase)
         & (df["dataset"] == job.dataset)
-        & (df["cache_seed"] == str(job.cache_seed))
+        & (df["base_seed"] == str(job.base_seed))
+        & (df["cp_seed"] == str(job.cp_seed))
         & (df["base_model"] == job.base_model)
         & (df["cp_mode"] == job.cp_mode)
         & (df["ablation_mode"] == job.ablation_mode)
@@ -296,7 +316,8 @@ def run_job(job: Job) -> Dict[str, str]:
         "timestamp": ts,
         "phase": job.phase,
         "dataset": job.dataset,
-        "cache_seed": str(job.cache_seed),
+        "base_seed": str(job.base_seed),
+        "cp_seed": str(job.cp_seed),
         "cache_path": str(job.cache_path) if job.cache_path else "",
         "base_model": job.base_model,
         "cp_mode": job.cp_mode,
@@ -328,7 +349,7 @@ def run_job(job: Job) -> Dict[str, str]:
     base_row["command"] = shlex.join(cmd)
     log_name = (
         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{job.phase}_"
-        f"{job.dataset}_{job.base_model}_{job.cp_mode}_seed{job.cache_seed}.log"
+        f"{job.dataset}_{job.base_model}_{job.cp_mode}_base{job.base_seed}_cp{job.cp_seed}.log"
     )
     cmd_log_path = COMMAND_LOG_DIR / log_name
 
@@ -416,7 +437,8 @@ def summarise_regime_metrics(success_jobs: List[Job], out_dir: Path) -> None:
             continue
         df = pd.read_csv(regime_path)
         df["dataset"] = job.dataset
-        df["cache_seed"] = job.cache_seed
+        df["base_seed"] = job.base_seed
+        df["cp_seed"] = job.cp_seed
         df["base_model"] = job.base_model
         df["cp_mode"] = job.cp_mode
         df["ablation_mode"] = job.ablation_mode
@@ -459,15 +481,16 @@ def make_jobs(args: argparse.Namespace) -> List[Job]:
     if args.phase == "baseline":
         cp_modes = args.cp_modes or BASELINE_MODES
         models = args.models or BASE_FORECASTERS
-        for seed in SEEDS:
+        for base_seed in [args.base_seed]:
             for model in models:
-                cache_path = discover_cache(seed, dataset, model)
+                cache_path = discover_cache(base_seed, dataset, model)
                 for cp_mode in cp_modes:
                     jobs.append(Job(
                         phase="baseline",
                         dataset=dataset,
                         data_path=data_path,
-                        cache_seed=seed,
+                        base_seed=base_seed,
+                        cp_seed=args.cp_seed,
                         cache_path=cache_path,
                         base_model=model,
                         cp_mode=cp_mode,
@@ -480,7 +503,7 @@ def make_jobs(args: argparse.Namespace) -> List[Job]:
     elif args.phase == "ablation":
         models = args.models or BASE_FORECASTERS
         modes = args.ablation_modes or ABLATION_MODES
-        for seed in SEEDS:
+        for seed in BASE_SEEDS:
             for model in models:
                 cache_path = discover_cache(seed, dataset, model)
                 for mode in modes:
@@ -488,7 +511,8 @@ def make_jobs(args: argparse.Namespace) -> List[Job]:
                         phase="ablation",
                         dataset=dataset,
                         data_path=data_path,
-                        cache_seed=seed,
+                        base_seed=seed,
+                        cp_seed=seed,
                         cache_path=cache_path,
                         base_model=model,
                         cp_mode="acp",
@@ -502,7 +526,7 @@ def make_jobs(args: argparse.Namespace) -> List[Job]:
     else:
         models = args.models or ["iTransformer"]
         values = args.values
-        for seed in SEEDS:
+        for seed in BASE_SEEDS:
             for model in models:
                 cache_path = discover_cache(seed, dataset, model)
                 for value in values:
@@ -510,7 +534,8 @@ def make_jobs(args: argparse.Namespace) -> List[Job]:
                         phase="sensitivity",
                         dataset=dataset,
                         data_path=data_path,
-                        cache_seed=seed,
+                        base_seed=seed,
+                        cp_seed=seed,
                         cache_path=cache_path,
                         base_model=model,
                         cp_mode="acp",
@@ -526,7 +551,7 @@ def make_jobs(args: argparse.Namespace) -> List[Job]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run cache-based CPRL experiments across 5 cache seeds.")
+    parser = argparse.ArgumentParser(description="Run cache-based CPRL experiments with separate base and CP seeds.")
     sub = parser.add_subparsers(dest="phase", required=True)
 
     def add_common(p: argparse.ArgumentParser, default_results: str) -> None:
@@ -540,12 +565,19 @@ def parse_args() -> argparse.Namespace:
         p.add_argument("--results_dir", default=default_results)
 
     p1 = sub.add_parser("baseline")
-    add_common(p1, "results_cache_baselines")
-    p1.add_argument("--cp_modes", nargs="*", default=[], help="Comparison methods; default: acp aci agaci dfpi hopcpt nex")
+    add_common(p1, "results/baseline_all_v2")
+    p1.add_argument("--base_seed", type=int, default=2021, help="Seed used to select the cached base forecaster.")
+    p1.add_argument("--cp_seed", type=int, default=2011, help="Seed used by the CP method.")
+    p1.add_argument(
+        "--cp_modes",
+        nargs="*",
+        default=[],
+        help="Comparison methods; default: acp aci agaci dfpi hopcpt nex cpid bellman",
+    )
 
     p2 = sub.add_parser("ablation")
     add_common(p2, "results_cache_ablation")
-    p2.add_argument("--ablation_modes", nargs="*", default=[], help="Default: M0 M1 M2 M3 M4")
+    p2.add_argument("--ablation_modes", nargs="*", default=[], help="Default: M0 M1 M2 M3 M4 M5")
 
     p3 = sub.add_parser("sensitivity")
     add_common(p3, "results_cache_sensitivity")
@@ -572,7 +604,8 @@ def main() -> int:
         metrics.update({
             "phase": job.phase,
             "dataset": job.dataset,
-            "cache_seed": job.cache_seed,
+            "base_seed": job.base_seed,
+            "cp_seed": job.cp_seed,
             "base_model": job.base_model,
             "cp_mode": job.cp_mode,
             "ablation_mode": job.ablation_mode,
@@ -590,7 +623,8 @@ def main() -> int:
 
     summarise_runs(success_metric_rows, group_cols, results_dir)
     summarise_regime_metrics(success_jobs, results_dir)
-    if args.phase == "baseline":
+    # Optional post-processing; the experiment runner itself does not require it.
+    if args.phase == "baseline" and os.environ.get("RUN_BASELINE_REBUILD") == "1":
         rebuild_baseline_outputs(results_dir)
     write_batch_summary(args.phase, run_rows)
     return 0
