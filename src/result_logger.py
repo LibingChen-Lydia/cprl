@@ -10,6 +10,7 @@ class ResultLogger:
         "setting",
         "cp_mode",
         "target_coverage",
+        "runtime_seconds",
         "coverage",
         "abs_coverage_gap",
         "under_coverage_gap",
@@ -28,6 +29,7 @@ class ResultLogger:
         "setting",
         "cp_mode",
         "target_coverage",
+        "runtime_seconds",
         "worst_window_coverage",
         "width_step_mean",
         "width_std",
@@ -56,6 +58,24 @@ class ResultLogger:
             with open(csv_path, mode="w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(header)
+            return
+
+        try:
+            df = pd.read_csv(csv_path)
+        except pd.errors.EmptyDataError:
+            with open(csv_path, mode="w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+            return
+
+        if list(df.columns) == header:
+            return
+
+        for col in header:
+            if col not in df.columns:
+                df[col] = None
+        df = df[header]
+        df.to_csv(csv_path, index=False)
 
     @staticmethod
     def _append_row(csv_path: str, header: list, row_dict: Dict):
@@ -70,6 +90,7 @@ class ResultLogger:
         setting: str,
         cp_mode: str,
         target_coverage: float,
+        runtime_seconds: Optional[float],
         metrics: Dict,
         comment: str = "",
     ):
@@ -78,6 +99,7 @@ class ResultLogger:
             "setting": setting,
             "cp_mode": cp_mode,
             "target_coverage": target_coverage,
+            "runtime_seconds": runtime_seconds,
             "coverage": metrics.get("coverage"),
             "abs_coverage_gap": metrics.get("abs_coverage_gap"),
             "under_coverage_gap": metrics.get("under_coverage_gap"),
@@ -98,6 +120,7 @@ class ResultLogger:
         setting: str,
         cp_mode: str,
         target_coverage: float,
+        runtime_seconds: Optional[float],
         adaptive_metrics: Dict,
         comment: str = "",
     ):
@@ -106,6 +129,7 @@ class ResultLogger:
             "setting": setting,
             "cp_mode": cp_mode,
             "target_coverage": target_coverage,
+            "runtime_seconds": runtime_seconds,
             "worst_window_coverage": adaptive_metrics.get("worst_window_coverage"),
             "width_step_mean": adaptive_metrics.get("width_step_mean"),
             "width_std": adaptive_metrics.get("width_std"),

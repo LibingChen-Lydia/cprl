@@ -86,7 +86,8 @@ class ACICP:
         alpha: float,
         window_size: Optional[int] = None,   # kept for builder compatibility (unused)
         min_calib_size: int = 30,
-        lr: float = 0.01,                    # kept old arg name; treated as gamma
+        gamma: Optional[float] = None,
+        lr: Optional[float] = None,          # backward-compatible alias for gamma
         T0: int = 500,
         warm_start: int = 50,
         fallback_width: float = 3.0,
@@ -95,9 +96,12 @@ class ACICP:
         seed: int = 0,
         **kwargs,
     ):
+        if gamma is None:
+            gamma = 0.01 if lr is None else lr
+
         self.config = ACIConfig(
             alpha0=float(alpha),
-            gamma=float(lr),
+            gamma=float(gamma),
             T0=int(T0),
             min_calib_size=int(min_calib_size),
             warm_start=int(warm_start),

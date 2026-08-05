@@ -1,7 +1,7 @@
 # conformal_prediction.py
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Tuple
 from collections import deque
 
@@ -13,19 +13,14 @@ try:
 except ImportError:
     _HAS_QR = False
 
-try:
-    from sklearn.cluster import DBSCAN as _DBSCAN
-    _HAS_DBSCAN = True
-except ImportError:
-    _HAS_DBSCAN = False
-
 @dataclass
 class ConformalPredictionConfig:
+    # Target risk level and rolling window used by the online calibrator.
     initial_alpha: float = 0.1
     target_coverage: float = 0.9
     window_size: int = 64
 
-    # --- adaptive regime discovery ---
+    # Latent regime discovery.
     max_regimes: int = 8                
     new_regime_threshold: float = 2.2
     new_regime_patience: int = 3      
@@ -37,13 +32,11 @@ class ConformalPredictionConfig:
     jump_q: float = 0.95            
     feature_ema: float = 0.05         
 
-    # sliding windows
+    # Calibration and trust-gating windows.
     calib_window_size: int = 150
     min_calib_size: int = 20
     min_regime_calib_size: int = 20
 
-    # spectral term weight
-    lambda_spectral: float = 0.5
     min_spectral_size: int = 30
 
     # ACI learning-rate modulation
@@ -62,7 +55,6 @@ class ConformalPredictionConfig:
     cqr_refit_every: int = 50       # retrain QR model every N update steps
     cqr_l2: float = 0.1             # L2 regularisation for QuantileRegressor
     cqr_split_ratio: float = 0.6    # sequential-split fraction for QR training
-    use_legacy_buffer_cqr: bool = False  # old pseudo-CQR fallback on raw buffers
     cqr_r_clip: float = 8.0
     cqr_x_clip_quantile: float = 0.01
     cqr_x_std_clip: float = 6.0
@@ -71,47 +63,15 @@ class ConformalPredictionConfig:
     unc_floor_quantile: float = 0.1
     unc_floor_scale: float = 0.5
 
-    # residual-space regime discovery + warm-start
+    # Residual-space regime discovery and alpha warm start.
     regime_on_residuals: bool = True
-    fallback_to_price_regime: bool = False
     warmstart_blend: float = 0.3
-    regime_method: str = "feature"
 
-    # ODE-based regime discovery
-    ode_window_size: int = 48
-    ode_smooth_window: int = 3
-    ode_use_residuals: bool = True
-    ode_ic: str = "bic"
-    ode_cond_max: float = 1e6
-    ode_stable_only: bool = True
-    ode_min_samples: int = 16
-    ode_cluster_eps_order0: float = 0.55
-    ode_cluster_eps_order1: float = 0.9
-    ode_cluster_eps_order2: float = 1.1
-    ode_cluster_min_samples: int = 6
-    ode_refit_every: int = 25
-    ode_bootstrap_size: int = 60
-    ode_assignment_threshold: float = 2.0
-    ode_order_switch_margin: float = 2.0
-    ode_order_switch_patience: int = 3
-    ode_use_feature_filter: bool = False
-    ode_filter_process_var: float = 0.05
-    ode_filter_measure_var: float = 0.5
-    ode_filter_init_var: float = 1.0
-    ode_filter_reset_on_order_change: bool = True
-
-    # per-regime fallback thresholds
-    min_regime_eval_size: int = 20
+    # Minimum local coverage support before using regime-specific calibration.
     min_regime_cov_size: int = 20
 
-    # coverage history window (for regime trust gating)
+    # Coverage history window for regime trust gating.
     coverage_window: int = 50
-
-    # refresh k in steps
-    k_update_every: int = 20
-    k_min: float = 1e-3
-    k_max: float = 100.0
-    k_fallback: float = 1.0
 
     # alpha bounds
     alpha_min: float = 0.01
@@ -123,6 +83,8 @@ class ConformalPredictionConfig:
 
 
 class _SpectralDrift:
+    """FFT-based Wasserstein drift statistic for adjacent error windows."""
+
     def __init__(self, window_size: int):
         self.window_size = int(window_size)
 
@@ -132,7 +94,7 @@ class _SpectralDrift:
         if len(x) == 0 or len(y) == 0:
             return 0.0
 
-        # FFT → power spectrum
+        # Convert each sub-window into a normalized power spectrum.
         fx = np.abs(np.fft.rfft(x)) ** 2
         fy = np.abs(np.fft.rfft(y)) ** 2
 
@@ -144,7 +106,7 @@ class _SpectralDrift:
         px = fx / sx
         py = fy / sy
 
-        # Wasserstein-1 (1D closed form)
+        # One-dimensional Wasserstein distance between cumulative spectra.
         cdf_x = np.cumsum(px)
         cdf_y = np.cumsum(py)
 
@@ -197,8 +159,7 @@ def _weighted_quantile(values: np.ndarray, weights: np.ndarray,
 
 class _ACIAlphaController:
     """
-    ACI (Adaptive Conformal Inference) backbone with spectral learning-rate
-    modulation.
+    Regime-aware ACI controller with spectral learning-rate modulation.
 
     Core update rule (Gibbs & Candès, 2021):
         α_{t+1} = α_t + γ_t · (covered_t − target_coverage)
@@ -210,9 +171,6 @@ class _ACIAlphaController:
     increases, enabling faster adaptation.  When the spectrum is stable the
     learning rate shrinks back to γ_base, preserving the long-run marginal
     coverage guarantee of ACI.
-
-    Public interface mirrors legacy _AlphaController so that
-    AdaptiveConformalPredictor needs only minimal wiring changes.
     """
 
     def __init__(self, n_regimes: int, alpha_init: float,
@@ -226,7 +184,7 @@ class _ACIAlphaController:
         # global alpha track
         self.alpha_global = float(alpha_init)
 
-        # warm-start bookkeeping (Method 3)
+        # Regime-transition bookkeeping for alpha warm starts.
         self.prev_rid: Optional[int] = None
         self.regime_step_counts = np.zeros(self.n_regimes, dtype=int)
 
@@ -234,10 +192,6 @@ class _ACIAlphaController:
         self._regime_cov_ema = np.full(self.n_regimes, float(cfg.target_coverage),
                                        dtype=float)
         self._regime_cov_n = np.zeros(self.n_regimes, dtype=int)
-
-    # ------------------------------------------------------------------
-    # choose / step interface used by the adaptive alpha controller.
-    # ------------------------------------------------------------------
 
     def _warmstart_alpha(self, rid: int) -> None:
         """Warm-start a new regime's alpha from cross-regime weighted average."""
@@ -314,7 +268,7 @@ class _ACIAlphaController:
             + (1.0 - ema_beta) * float(covered))
         self._regime_cov_n[rid_c] += 1
 
-        # warm-start on regime transition (Method 3)
+        # Warm-start a newly entered regime if it has limited local history.
         if self.prev_rid is not None and rid_c != self.prev_rid:
             min_samples = int(getattr(self.cfg, 'min_regime_calib_size', 20))
             if self.regime_step_counts[rid_c] < min_samples:
@@ -339,8 +293,12 @@ class _ACIAlphaController:
 
 class _AdaptiveRegimeKernel:
     """
-    Online regime discovery for financial series:
-    robust volatility + jump rate + dependence + sticky/hysteresis.
+    Online latent-regime discovery from recent residual or value windows.
+
+    The feature vector tracks robust volatility, EWMA volatility, jump rate,
+    lag-1 dependence, and normalized trend. Sticky assignment and minimum dwell
+    time reduce transient regime switching.
+
     Returns rid in [0, K-1], where K grows up to cfg.max_regimes.
     """
     def __init__(self, cfg: ConformalPredictionConfig, random_seed: int = 42):
@@ -404,10 +362,7 @@ class _AdaptiveRegimeKernel:
 
     def _features(self, price_window: np.ndarray) -> np.ndarray:
         """
-        Market-state features from past price window.
-
-        price_window: shape (L,) = lagged observed values (e.g., exchange rate level)
-        We use log-return / volatility / jump / autocorr / trend slope.
+        Optional value-window route used when residual-based regimes are disabled.
         """
 
         p = np.asarray(price_window, dtype=float).reshape(-1)
@@ -553,373 +508,15 @@ class _AdaptiveRegimeKernel:
         return int(j)
 
 
-@dataclass
-class _ODEFitResult:
-    order: int
-    params: np.ndarray
-    bic: float
-    rss: float
-    n_obs: int
-    cond_number: float
-    is_stable: bool
-    feature: np.ndarray
-    roots: np.ndarray = field(default_factory=lambda: np.array([], dtype=complex))
-
-
-class _ODERegimeKernel:
-    """
-    ODE-based regime discovery:
-    fit local 0/1/2-order models on sliding windows, choose the best order,
-    then cluster valid windows within each order using DBSCAN.
-    """
-
-    def __init__(self, cfg: ConformalPredictionConfig):
-        self.cfg = cfg
-        self.max_regimes = int(cfg.max_regimes)
-        self.refit_every = max(1, int(getattr(cfg, "ode_refit_every", 20)))
-        self.bootstrap_size = max(1, int(getattr(cfg, "ode_bootstrap_size", 40)))
-        self.assign_threshold = float(getattr(cfg, "ode_assignment_threshold", 2.5))
-        self.cluster_min_samples = max(2, int(getattr(cfg, "ode_cluster_min_samples", 5)))
-        self.cond_max = float(getattr(cfg, "ode_cond_max", 1e8))
-        self.stable_only = bool(getattr(cfg, "ode_stable_only", True))
-        self.min_samples = max(8, int(getattr(cfg, "ode_min_samples", 12)))
-        self.order_switch_margin = float(getattr(cfg, "ode_order_switch_margin", 0.0))
-        self.order_switch_patience = max(1, int(getattr(cfg, "ode_order_switch_patience", 1)))
-        self.use_feature_filter = bool(getattr(cfg, "ode_use_feature_filter", False))
-        self.filter_process_var = max(1e-8, float(getattr(cfg, "ode_filter_process_var", 0.05)))
-        self.filter_measure_var = max(1e-8, float(getattr(cfg, "ode_filter_measure_var", 0.5)))
-        self.filter_init_var = max(1e-8, float(getattr(cfg, "ode_filter_init_var", 1.0)))
-        self.filter_reset_on_order_change = bool(getattr(cfg, "ode_filter_reset_on_order_change", True))
-
-        self.window_history: List[_ODEFitResult] = []
-        self.cluster_centers: Dict[int, List[np.ndarray]] = {0: [], 1: [], 2: []}
-        self.cluster_rids: Dict[int, List[int]] = {0: [], 1: [], 2: []}
-        self.next_rid: int = 0
-        self.prev_rid: Optional[int] = None
-        self.prev_order: Optional[int] = None
-        self.pending_order: Optional[int] = None
-        self.pending_order_hits: int = 0
-        self._steps_seen: int = 0
-        self._filter_mean: Dict[int, Optional[np.ndarray]] = {0: None, 1: None, 2: None}
-        self._filter_cov: Dict[int, Optional[np.ndarray]] = {0: None, 1: None, 2: None}
-
-    def reset(self) -> None:
-        self.window_history.clear()
-        self.cluster_centers = {0: [], 1: [], 2: []}
-        self.cluster_rids = {0: [], 1: [], 2: []}
-        self.next_rid = 0
-        self.prev_rid = None
-        self.prev_order = None
-        self.pending_order = None
-        self.pending_order_hits = 0
-        self._steps_seen = 0
-        self._filter_mean = {0: None, 1: None, 2: None}
-        self._filter_cov = {0: None, 1: None, 2: None}
-
-    def _smooth(self, x: np.ndarray) -> np.ndarray:
-        w = max(1, int(getattr(self.cfg, "ode_smooth_window", 1)))
-        if w <= 1 or len(x) < w:
-            return x
-        ker = np.ones(w, dtype=float) / float(w)
-        return np.convolve(x, ker, mode="same")
-
-    def _bic(self, rss: float, n_obs: int, n_params: int) -> float:
-        rss_eff = max(float(rss), 1e-12)
-        return float(n_obs * np.log(rss_eff / max(n_obs, 1)) + n_params * np.log(max(n_obs, 1)))
-
-    def _solve_lstsq(self, X: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, float, float]:
-        beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
-        resid = y - X @ beta
-        rss = float(np.dot(resid, resid))
-        cond = float(np.linalg.cond(X)) if X.size > 0 else np.inf
-        return beta, rss, cond
-
-    def _fit_order0(self, x: np.ndarray) -> _ODEFitResult:
-        b0 = float(np.mean(x))
-        resid = x - b0
-        rss = float(np.dot(resid, resid))
-        feature = np.array([b0], dtype=float)
-        return _ODEFitResult(
-            order=0,
-            params=np.array([b0], dtype=float),
-            bic=self._bic(rss, len(x), 1),
-            rss=rss,
-            n_obs=len(x),
-            cond_number=1.0,
-            is_stable=True,
-            feature=feature,
-        )
-
-    def _fit_order1(self, x: np.ndarray) -> Optional[_ODEFitResult]:
-        if len(x) < self.min_samples:
-            return None
-        dx = np.diff(x)
-        x_prev = x[:-1]
-        if len(dx) < self.min_samples - 1:
-            return None
-        X = np.column_stack([-x_prev, np.ones_like(x_prev)])
-        beta, rss, cond = self._solve_lstsq(X, dx)
-        a0, b0 = float(beta[0]), float(beta[1])
-        is_stable = bool(a0 >= 0.0)
-        feature = np.array([a0, b0], dtype=float)
-        return _ODEFitResult(
-            order=1,
-            params=np.array([a0, b0], dtype=float),
-            bic=self._bic(rss, len(dx), 2),
-            rss=rss,
-            n_obs=len(dx),
-            cond_number=cond,
-            is_stable=is_stable,
-            feature=feature,
-        )
-
-    def _fit_order2(self, x: np.ndarray) -> Optional[_ODEFitResult]:
-        if len(x) < self.min_samples + 1:
-            return None
-        dx = np.diff(x)
-        d2x = np.diff(dx)
-        if len(d2x) < self.min_samples - 2:
-            return None
-        dx_prev = dx[:-1]
-        x_prev = x[:-2]
-        X = np.column_stack([-dx_prev, -x_prev, np.ones_like(x_prev)])
-        beta, rss, cond = self._solve_lstsq(X, d2x)
-        a1, a0, b0 = float(beta[0]), float(beta[1]), float(beta[2])
-        roots = np.roots(np.array([1.0, a1, a0], dtype=float))
-        is_stable = bool(np.all(np.real(roots) <= 1e-8))
-        if np.iscomplexobj(roots):
-            roots_sorted = sorted(roots, key=lambda z: (np.real(z), np.imag(z)))
-        else:
-            roots_sorted = sorted([complex(r) for r in roots], key=lambda z: (np.real(z), np.imag(z)))
-        feature = np.array([
-            float(np.real(roots_sorted[0])),
-            float(np.imag(roots_sorted[0])),
-            float(np.real(roots_sorted[-1])),
-            float(np.imag(roots_sorted[-1])),
-            b0,
-        ], dtype=float)
-        return _ODEFitResult(
-            order=2,
-            params=np.array([a0, a1, b0], dtype=float),
-            bic=self._bic(rss, len(d2x), 3),
-            rss=rss,
-            n_obs=len(d2x),
-            cond_number=cond,
-            is_stable=is_stable,
-            feature=feature,
-            roots=np.asarray(roots, dtype=complex),
-        )
-
-    def _fit_best(self, window: np.ndarray) -> Optional[_ODEFitResult]:
-        x = np.asarray(window, dtype=float).reshape(-1)
-        x = x[np.isfinite(x)]
-        if len(x) < self.min_samples:
-            return None
-        x = self._smooth(x)
-        candidates = [self._fit_order0(x)]
-        fit1 = self._fit_order1(x)
-        fit2 = self._fit_order2(x)
-        if fit1 is not None:
-            candidates.append(fit1)
-        if fit2 is not None:
-            candidates.append(fit2)
-
-        valid: List[_ODEFitResult] = []
-        for fit in candidates:
-            if not np.all(np.isfinite(fit.params)) or not np.all(np.isfinite(fit.feature)):
-                continue
-            if fit.cond_number > self.cond_max:
-                continue
-            if self.stable_only and not fit.is_stable:
-                continue
-            valid.append(fit)
-        if len(valid) == 0:
-            return candidates[0] if len(candidates) > 0 else None
-        by_order: Dict[int, _ODEFitResult] = {}
-        for fit in valid:
-            cur = by_order.get(int(fit.order))
-            if cur is None or (fit.bic, fit.order) < (cur.bic, cur.order):
-                by_order[int(fit.order)] = fit
-
-        best_fit = min(valid, key=lambda fit: (fit.bic, fit.order))
-        if self.prev_order is None:
-            self.pending_order = None
-            self.pending_order_hits = 0
-            return best_fit
-
-        current_fit = by_order.get(int(self.prev_order))
-        if current_fit is None:
-            self.pending_order = None
-            self.pending_order_hits = 0
-            return best_fit
-
-        if int(best_fit.order) == int(self.prev_order):
-            self.pending_order = None
-            self.pending_order_hits = 0
-            return current_fit
-
-        improvement = float(current_fit.bic - best_fit.bic)
-        if improvement <= self.order_switch_margin:
-            self.pending_order = None
-            self.pending_order_hits = 0
-            return current_fit
-
-        if self.pending_order is not None and int(self.pending_order) == int(best_fit.order):
-            self.pending_order_hits += 1
-        else:
-            self.pending_order = int(best_fit.order)
-            self.pending_order_hits = 1
-
-        if self.pending_order_hits >= self.order_switch_patience:
-            self.pending_order = None
-            self.pending_order_hits = 0
-            return best_fit
-
-        return current_fit
-
-    def _cluster_eps(self, order: int) -> float:
-        if order == 0:
-            return float(getattr(self.cfg, "ode_cluster_eps_order0", 0.8))
-        if order == 1:
-            return float(getattr(self.cfg, "ode_cluster_eps_order1", 1.2))
-        return float(getattr(self.cfg, "ode_cluster_eps_order2", 1.2))
-
-    def _normalize_features(self, rows: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        X = np.asarray(rows, dtype=float)
-        mu = X.mean(axis=0)
-        sigma = np.maximum(X.std(axis=0), 1e-8)
-        return (X - mu) / sigma, mu, sigma
-
-    def _rebuild_clusters(self) -> None:
-        self.cluster_centers = {0: [], 1: [], 2: []}
-        self.cluster_rids = {0: [], 1: [], 2: []}
-        self.next_rid = 0
-
-        if len(self.window_history) < self.bootstrap_size:
-            return
-
-        for order in (0, 1, 2):
-            fits = [fit for fit in self.window_history if fit.order == order]
-            if len(fits) < self.cluster_min_samples:
-                continue
-            rows = [fit.feature for fit in fits]
-            Xn, mu, sigma = self._normalize_features(rows)
-            if not _HAS_DBSCAN:
-                labels = np.zeros(len(fits), dtype=int)
-            else:
-                labels = _DBSCAN(
-                    eps=self._cluster_eps(order),
-                    min_samples=self.cluster_min_samples,
-                ).fit_predict(Xn)
-            keep_labels = sorted(label for label in set(labels.tolist()) if label >= 0)
-            for label in keep_labels:
-                members = [rows[i] for i, lab in enumerate(labels.tolist()) if lab == label]
-                if len(members) == 0:
-                    continue
-                mem_arr = np.asarray(members, dtype=float)
-                center_raw = np.median(mem_arr, axis=0)
-                center_norm = (center_raw - mu) / sigma
-                if self.next_rid >= self.max_regimes:
-                    return
-                self.cluster_centers[order].append(center_norm)
-                self.cluster_rids[order].append(self.next_rid)
-                self.next_rid += 1
-
-    def _filter_feature(self, order: int, feature: np.ndarray) -> np.ndarray:
-        f = np.asarray(feature, dtype=float).reshape(-1)
-        if not self.use_feature_filter:
-            return f
-
-        order = int(order)
-        if self.filter_reset_on_order_change and self.prev_order is not None and order != self.prev_order:
-            self._filter_mean[order] = None
-            self._filter_cov[order] = None
-
-        mean_prev = self._filter_mean.get(order)
-        cov_prev = self._filter_cov.get(order)
-        dim = int(f.shape[0])
-        q = self.filter_process_var
-        r = self.filter_measure_var
-
-        if mean_prev is None or cov_prev is None or mean_prev.shape[0] != dim:
-            mean = f.copy()
-            cov = np.eye(dim, dtype=float) * self.filter_init_var
-        else:
-            mean_pred = mean_prev
-            cov_pred = cov_prev + np.eye(dim, dtype=float) * q
-            S = cov_pred + np.eye(dim, dtype=float) * r
-            K = cov_pred @ np.linalg.pinv(S)
-            mean = mean_pred + K @ (f - mean_pred)
-            cov = (np.eye(dim, dtype=float) - K) @ cov_pred
-
-        self._filter_mean[order] = mean
-        self._filter_cov[order] = cov
-        return mean
-
-    def _assign_cluster(self, fit: _ODEFitResult, feature_now: Optional[np.ndarray] = None) -> Optional[int]:
-        order = int(fit.order)
-        centers = self.cluster_centers.get(order, [])
-        rids = self.cluster_rids.get(order, [])
-        if len(centers) == 0 or len(rids) == 0:
-            return None
-        rows = [f.feature for f in self.window_history if f.order == order]
-        rows.append(np.asarray(feature_now if feature_now is not None else fit.feature, dtype=float))
-        Xn, _, _ = self._normalize_features(rows)
-        f_now = Xn[-1]
-        dists = np.array([np.linalg.norm(f_now - c) for c in centers], dtype=float)
-        if len(dists) == 0:
-            return None
-        j = int(np.argmin(dists))
-        if float(dists[j]) > self.assign_threshold:
-            return None
-        return int(rids[j])
-
-    def _fallback_rid(self) -> int:
-        if self.prev_rid is not None:
-            return int(self.prev_rid)
-        return 0
-
-    def _update_and_get_regime(self, window: np.ndarray, residual: bool = False) -> int:
-        fit = self._fit_best(window)
-        if fit is None:
-            return self._fallback_rid()
-
-        self.window_history.append(fit)
-        Wc = max(self.bootstrap_size * 4, int(getattr(self.cfg, "calib_window_size", 150)))
-        if len(self.window_history) > Wc:
-            self.window_history = self.window_history[-Wc:]
-
-        self._steps_seen += 1
-        need_rebuild = (
-            len(self.window_history) == self.bootstrap_size
-            or (len(self.window_history) > self.bootstrap_size and self._steps_seen % self.refit_every == 0)
-        )
-        if need_rebuild:
-            self._rebuild_clusters()
-
-        feature_now = self._filter_feature(int(fit.order), fit.feature)
-        rid = self._assign_cluster(fit, feature_now=feature_now)
-        if rid is None:
-            rid = self._fallback_rid()
-
-        rid = int(max(0, min(self.max_regimes - 1, rid)))
-        self.prev_rid = rid
-        self.prev_order = int(fit.order)
-        return rid
-
 class AdaptiveConformalPredictor:
     def __init__(self, config: Optional[ConformalPredictionConfig] = None) -> None:
         self.config = config or ConformalPredictionConfig()
 
         R = int(self.config.max_regimes)
 
-        # internal "flow" components (merged)
+        # Main paper components: spectral drift, regime discovery, and alpha control.
         self._drift = _SpectralDrift(window_size=int(self.config.window_size))
-        regime_method = str(getattr(self.config, "regime_method", "feature")).lower()
-        if regime_method == "ode":
-            self._regime = _ODERegimeKernel(cfg=self.config)
-        else:
-            self._regime = _AdaptiveRegimeKernel(cfg=self.config)
+        self._regime = _AdaptiveRegimeKernel(cfg=self.config)
         self._alpha = _ACIAlphaController(n_regimes=R, alpha_init=float(self.config.initial_alpha), cfg=self.config)
 
         # state
@@ -929,11 +526,10 @@ class AdaptiveConformalPredictor:
         # rolling errors
         self.prediction_errors: Deque[float] = deque(maxlen=int(self.config.window_size)+1)
 
-        # buffers: global + per regime
+        # Calibration buffers are maintained globally and per discovered regime.
         self._init_buffers()
 
         self.alpha_history: List[float] = []
-        self.k_history: List[float] = []
         self.spectral_q_history: List[float] = []
         self.use_regime_history: List[bool] = []
         self.margin_route_history: List[str] = []
@@ -953,16 +549,10 @@ class AdaptiveConformalPredictor:
         self.cover_hist_global: Deque[float] = deque(maxlen=int(self.config.coverage_window))
         self.cover_hist_by_regime: Dict[int, Deque[float]] = {r: deque(maxlen=int(self.config.coverage_window)) for r in range(R)}
 
-        # k scales
-        self._k_scale_global: float = float(self.config.k_fallback)
-        self._k_scale_by_regime: Dict[int, float] = {r: float(self.config.k_fallback) for r in range(R)}
-        self._k_t_global: int = 0
-        self._k_t_by_regime: Dict[int, int] = {r: 0 for r in range(R)}
-
-        # CQR online quantile regression state
-        self._cqr_X_buf: List[np.ndarray] = []       # stored features  (sliding)
-        self._cqr_r_buf: List[float] = []             # signed normalised residuals
-        self._cqr_E_buf: Deque[float] = deque(maxlen=Wc)  # CQR scores (held-out)
+        # Conditional residual-quantile route.
+        self._cqr_X_buf: List[np.ndarray] = []       # covariate history
+        self._cqr_r_buf: List[float] = []             # signed normalized residuals
+        self._cqr_E_buf: Deque[float] = deque(maxlen=Wc)  # held-out residual-quantile scores
         self._cqr_s_buf: Deque[float] = deque(maxlen=Wc)  # spectral scores aligned with E
         self._cqr_model_lo = None   # QuantileRegressor for α/2
         self._cqr_model_hi = None   # QuantileRegressor for 1-α/2
@@ -1005,7 +595,6 @@ class AdaptiveConformalPredictor:
             self.calib_e_hi_global,
             self.calib_s_global,
             self.cover_hist_global,
-            self._k_scale_global,
             )
 
     def _buffers_regime(self, rid: int):
@@ -1016,7 +605,6 @@ class AdaptiveConformalPredictor:
             self.calib_e_hi_by_regime[rid],
             self.calib_s_by_regime[rid],
             self.cover_hist_by_regime[rid],
-            self._k_scale_by_regime[rid],
         )
 
     def _effective_uncertainty(self, raw_unc: float) -> float:
@@ -1058,9 +646,9 @@ class AdaptiveConformalPredictor:
             return None
         return xs
         
-    # ---------- CQR online quantile regression ----------
+    # ---------- conditional residual-quantile route ----------
     def _refit_cqr(self) -> None:
-        """Train QR on I1 (sequential split), populate E_buf from I2."""
+        """Fit conditional residual quantiles on I1 and populate scores from I2."""
         if not _HAS_QR:
             return
         n = len(self._cqr_r_buf)
@@ -1130,7 +718,7 @@ class AdaptiveConformalPredictor:
             self._cqr_fitted = False
             return
 
-        # CQR scores on I2 (held-out)
+        # Held-out conformal scores for the conditional residual-quantile route.
         try:
             qlo = self._cqr_model_lo.predict(X2s)
             qhi = self._cqr_model_hi.predict(X2s)
@@ -1146,7 +734,7 @@ class AdaptiveConformalPredictor:
             self._cqr_fitted = False
             return
 
-        # populate E_buf and aligned s_buf
+        # Keep residual-quantile scores aligned with spectral scores.
         self._cqr_E_buf.clear()
         self._cqr_s_buf.clear()
         s_global = list(self.calib_s_global)
@@ -1160,7 +748,7 @@ class AdaptiveConformalPredictor:
         self._cqr_fitted = True
 
     def _cqr_score_one(self, x: np.ndarray, r: float) -> Optional[float]:
-        """Compute CQR score for a single new held-out sample."""
+        """Compute the conditional residual-quantile score for one sample."""
         if not self._cqr_fitted:
             return None
         xs = self._transform_cqr_x(x)
@@ -1178,54 +766,14 @@ class AdaptiveConformalPredictor:
             return None
         return float(max(qlo - r, r - qhi))
 
-    # ---------- k refresh ----------
-    def _maybe_refresh_k(self, rid: int) -> None:
-        def compute_k(e_lo_buf, e_hi_buf, s_buf) -> float:
-            if len(e_lo_buf) < 10 or len(e_hi_buf) < 10 or len(s_buf) < 10:
-                return float(self.config.k_fallback)
-
-            e_lo = np.asarray(list(e_lo_buf), float)
-            e_hi = np.asarray(list(e_hi_buf), float)
-            s = np.asarray(list(s_buf), float)
-
-            e = (e_lo + e_hi)
-            e = e[np.isfinite(e)]
-            s = s[np.isfinite(s)]
-            if len(e) < 10 or len(s) < 10:
-                return float(self.config.k_fallback)
-
-            med_e = float(np.median(e))
-            med_s = float(np.median(s))
-            if (not np.isfinite(med_e)) or (not np.isfinite(med_s)) or (med_s <= 1e-12):
-                k = float(self.config.k_fallback)
-            else:
-                k = med_e / med_s
-
-            k = float(np.clip(k, float(self.config.k_min), float(self.config.k_max)))
-            return float(k) if np.isfinite(k) else float(self.config.k_fallback)
-
-        rid = int(rid)
-        self._k_t_global += 1
-        if self._k_t_global % int(self.config.k_update_every) == 0:
-            self._k_scale_global = compute_k(self.calib_e_lo_global, self.calib_e_hi_global, self.calib_s_global)
-
-        self._k_t_by_regime[rid] += 1
-        if self._k_t_by_regime[rid] % int(self.config.k_update_every) == 0:
-            self._k_scale_by_regime[rid] = compute_k(
-                self.calib_e_lo_by_regime[rid], self.calib_e_hi_by_regime[rid], self.calib_s_by_regime[rid]
-            )
-
     # ---------- margins ----------
     def _margins_from_buffers(
         self,
         e_lo_buf,
         e_hi_buf,
         s_buf,
-        k_scale: float,
         alpha: float,
         model_uncertainty: float,
-        *,
-        use_legacy_buffer_cqr: bool = False,
     ) -> Tuple[float, float, float]:
         a = float(np.clip(alpha, float(self.config.alpha_min), float(self.config.alpha_max)))
 
@@ -1254,7 +802,7 @@ class AdaptiveConformalPredictor:
         else:
             w_raw = np.ones(n_raw, dtype=float)
 
-        # combined finite mask (matched pairs for CQR)
+        # Keep lower and upper scores paired when applying weights.
         mask = (np.isfinite(e_lo_raw[:n_raw])
                 & np.isfinite(e_hi_raw[:n_raw]))
         e_lo = e_lo_raw[:n_raw][mask]
@@ -1266,35 +814,12 @@ class AdaptiveConformalPredictor:
 
         use_wass_active = (use_wass and self.config.use_spectral and n_s >= n_raw)
 
-        if use_legacy_buffer_cqr:
-            # Legacy pseudo-CQR on empirical residual buffers.
-            # This is not the intended online QR-CQR path; it is kept only as an
-            # explicit fallback mode instead of being silently mixed into the
-            # default regime/global buffer routes.
-            r = e_hi - e_lo
-
-            if use_wass_active:
-                q_base_lo = float(_weighted_quantile(r, w, a / 2.0))
-                q_base_hi = float(_weighted_quantile(r, w, 1.0 - a / 2.0))
-            else:
-                q_base_lo = float(np.quantile(r, a / 2.0))
-                q_base_hi = float(np.quantile(r, 1.0 - a / 2.0))
-
-            e_cqr = np.maximum(q_base_lo - r, r - q_base_hi)
-            if use_wass_active:
-                Q = float(_weighted_quantile(e_cqr, w, 1.0 - a))
-            else:
-                Q = float(np.quantile(e_cqr, 1.0 - a))
-
-            q_lo = max(0.0, float(Q) - q_base_lo)
-            q_hi = max(0.0, q_base_hi + float(Q))
+        if use_wass_active:
+            q_lo = float(_weighted_quantile(e_lo, w, 1.0 - a))
+            q_hi = float(_weighted_quantile(e_hi, w, 1.0 - a))
         else:
-            if use_wass_active:
-                q_lo = float(_weighted_quantile(e_lo, w, 1.0 - a))
-                q_hi = float(_weighted_quantile(e_hi, w, 1.0 - a))
-            else:
-                q_lo = float(np.quantile(e_lo, 1.0 - a))
-                q_hi = float(np.quantile(e_hi, 1.0 - a))
+            q_lo = float(np.quantile(e_lo, 1.0 - a))
+            q_hi = float(np.quantile(e_hi, 1.0 - a))
 
         # spectral quantile (diagnostics only)
         q_s = 0.0
@@ -1311,33 +836,29 @@ class AdaptiveConformalPredictor:
         return float(m_lo), float(m_hi), float(q_s)
 
     def _margins_global(self, alpha: float, model_uncertainty: float) -> Tuple[float, float, float]:
-        e_lo, e_hi, s, _, k = self._buffers_global()
+        e_lo, e_hi, s, _ = self._buffers_global()
         return self._margins_from_buffers(
             e_lo,
             e_hi,
             s,
-            k,
             alpha,
             model_uncertainty,
-            use_legacy_buffer_cqr=bool(getattr(self.config, 'use_legacy_buffer_cqr', False)),
         )
 
     def _margins_regime(self, rid: int, alpha: float, model_uncertainty: float) -> Tuple[float, float, float]:
-        e_lo, e_hi, s, _, k = self._buffers_regime(rid)
+        e_lo, e_hi, s, _ = self._buffers_regime(rid)
         return self._margins_from_buffers(
             e_lo,
             e_hi,
             s,
-            k,
             alpha,
             model_uncertainty,
-            use_legacy_buffer_cqr=bool(getattr(self.config, 'use_legacy_buffer_cqr', False)),
         )
 
     def _margins_cqr(
         self, alpha: float, model_uncertainty: float, x_new
     ) -> Tuple[float, float, float]:
-        """CQR margins using online QR: q̂_lo(x), q̂_hi(x) + conformal Q."""
+        """Margins from conditional residual quantiles plus conformal correction."""
         a = float(np.clip(alpha, float(self.config.alpha_min), float(self.config.alpha_max)))
         min_E = int(self.config.min_calib_size)
 
@@ -1345,7 +866,7 @@ class AdaptiveConformalPredictor:
         if len(self._cqr_E_buf) < min_E:
             return self._margins_global(alpha=alpha, model_uncertainty=model_uncertainty)
 
-        # conditional quantile predictions for x_new
+        # Conditional residual quantiles for the current covariates.
         x_flat = np.asarray(x_new, dtype=float).ravel()
         xs = self._transform_cqr_x(x_flat)
         if xs is None:
@@ -1385,7 +906,7 @@ class AdaptiveConformalPredictor:
             self._cqr_fitted = False
             return self._margins_global(alpha=alpha, model_uncertainty=model_uncertainty)
 
-        # asymmetric margins in normalised space
+        # Asymmetric margins in normalized score space.
         m_lo = max(0.0, Q - q_base_lo)
         m_hi = max(0.0, q_base_hi + Q)
 
@@ -1463,16 +984,11 @@ class AdaptiveConformalPredictor:
         if x is None:
             x = kwargs.get("features", None)
 
-        # Method 3: residual-space regime discovery
-        regime_method = str(getattr(self.config, "regime_method", "feature")).lower()
-        if regime_method == "ode":
-            use_resid = bool(getattr(self.config, 'ode_use_residuals', True))
-        else:
-            use_resid = bool(getattr(self.config, 'regime_on_residuals', False))
-        fallback_to_price = bool(getattr(self.config, 'fallback_to_price_regime', False))
-        ode_window = max(8, int(getattr(self.config, "ode_window_size", self.config.window_size)))
+        # Select the current latent regime before observing y_t.
+        use_resid = bool(getattr(self.config, 'regime_on_residuals', False))
+        regime_window = max(8, int(self.config.window_size))
         if use_resid and len(self.prediction_errors) >= 12:
-            resid_win = np.asarray(list(self.prediction_errors)[-ode_window:], float)
+            resid_win = np.asarray(list(self.prediction_errors)[-regime_window:], float)
             rid = int(self._regime._update_and_get_regime(
                 resid_win, residual=True))
         elif (not use_resid) and x is not None:
@@ -1480,13 +996,7 @@ class AdaptiveConformalPredictor:
             if pw is None or pw.size < 12:
                 rid = 0
             else:
-                rid = int(self._regime._update_and_get_regime(pw[-ode_window:]))
-        elif use_resid and fallback_to_price and x is not None:
-            pw = self._extract_price_window(x)
-            if pw is None or pw.size < 12:
-                rid = 0
-            else:
-                rid = int(self._regime._update_and_get_regime(pw[-ode_window:]))
+                rid = int(self._regime._update_and_get_regime(pw[-regime_window:]))
         else:
             rid = 0
 
@@ -1505,15 +1015,12 @@ class AdaptiveConformalPredictor:
         if route == "cqr":
             m_lo, m_hi, q_s = self._margins_cqr(
                 alpha=alpha, model_uncertainty=unc, x_new=x)
-            k_used = float(self._k_scale_global)
         elif route == "regime":
             m_lo, m_hi, q_s = self._margins_regime(rid, alpha=alpha, model_uncertainty=unc)
-            k_used = float(self._k_scale_by_regime[rid])
         else:
             m_lo, m_hi, q_s = self._margins_global(alpha=alpha, model_uncertainty=unc)
-            k_used = float(self._k_scale_global)
 
-        # de-normalize: margins are in normalized space, scale back by unc
+        # Convert normalized margins back to the target scale.
         lower = float(yp - m_lo * unc)
         upper = float(yp + m_hi * unc)
 
@@ -1526,10 +1033,9 @@ class AdaptiveConformalPredictor:
             "m_lo": float(m_lo),
             "m_hi": float(m_hi),
             "q_s": float(q_s),
-            "k_used": float(k_used),
             "lower": float(lower),
             "upper": float(upper),
-            "x_raw": x,  # stored for CQR update
+            "x_raw": x,  # covariates used by the residual-quantile route
             "route": route,
         }
 
@@ -1589,8 +1095,6 @@ class AdaptiveConformalPredictor:
             self.calib_s_global.append(s)
             self.calib_s_by_regime[rid].append(float(s))
 
-            self._maybe_refresh_k(rid)
-
         use_r_now = bool(self._use_regime(rid))
 
         if self.config.use_adaptive_alpha:
@@ -1603,12 +1107,11 @@ class AdaptiveConformalPredictor:
 
         self.alpha_history.append(alpha_state)
 
-        self.k_history.append(float(p["k_used"]))
         self.spectral_q_history.append(float(q_s))
         self.use_regime_history.append(bool(use_r_pred))
         self.margin_route_history.append(str(p.get("route", "unknown")))
 
-        # --- CQR online QR: store (x, r) and maintain E_buf ---
+        # Update the conditional residual-quantile route after observing y_t.
         use_cqr = bool(getattr(self.config, 'use_cqr_score', False)) and _HAS_QR
         x_raw = p.get("x_raw", None)
         if use_cqr and x_raw is not None:
@@ -1621,7 +1124,7 @@ class AdaptiveConformalPredictor:
                 self._cqr_X_buf = self._cqr_X_buf[-Wc:]
                 self._cqr_r_buf = self._cqr_r_buf[-Wc:]
 
-            # if QR already fitted, score this new held-out sample
+            # If fitted, add the new held-out score before periodic refitting.
             if self._cqr_fitted:
                 E_new = self._cqr_score_one(x_flat, r_signed)
                 if E_new is not None:
@@ -1639,4 +1142,5 @@ class AdaptiveConformalPredictor:
         return float(lower), float(upper)
 
     def start_test(self):
+        """Interface hook used by the experiment runner."""
         return
