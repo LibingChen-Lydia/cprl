@@ -219,6 +219,7 @@ analysis_figures/
 experiment_logs/
 results_sanity*/
 results_cache_sanity*/
+results_cqr*/
 results_ode_cmp*/
 forecast_cache_seed*/
 *.npz
