@@ -230,9 +230,23 @@ forecast_cache_seed*/
 *.xls
 
 # Local benchmark data
-dataset/
-Datasets/
-time_series_library/dataset/
+/dataset/
+/Datasets/
+time_series_library/dataset/*
+!time_series_library/dataset/ETT-small/
+!time_series_library/dataset/ETT-small/*.csv
+!time_series_library/dataset/exchange_rate/
+!time_series_library/dataset/exchange_rate/*.csv
+!time_series_library/dataset/weather/
+!time_series_library/dataset/weather/*.csv
+!time_series_library/dataset/new_benchmarks/
+time_series_library/dataset/new_benchmarks/*
+!time_series_library/dataset/new_benchmarks/bci_vol/
+!time_series_library/dataset/new_benchmarks/bci_vol/*.csv
+!time_series_library/dataset/new_benchmarks/fred_md/
+!time_series_library/dataset/new_benchmarks/fred_md/*.csv
+!time_series_library/dataset/new_benchmarks/manifest.csv
+!time_series_library/dataset/new_benchmarks/manifest.md
 time_series_library/time_series_library/dataset/
 
 # Local archives and generated figures

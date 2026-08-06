@@ -1,0 +1,59 @@
+# New Dataset Forecast-Cache Manifest
+
+Upload `time_series_library/dataset/new_benchmarks/` to the same relative path on AutoDL.
+
+| dataset | family | rows | features | seq_len | label_len | pred_len | freq | data_path |
+|---|---|---:|---|---:|---:|---:|---|---|
+| bci_amazon_vol | BCI-Vol | 6527 | MS | 96 | 48 | 96 | d | time_series_library/dataset/new_benchmarks/bci_vol/bci_amazon_vol.csv |
+| bci_amd_vol | BCI-Vol | 5495 | MS | 96 | 48 | 96 | d | time_series_library/dataset/new_benchmarks/bci_vol/bci_amd_vol.csv |
+| bci_nvidia_vol | BCI-Vol | 5745 | MS | 96 | 48 | 96 | d | time_series_library/dataset/new_benchmarks/bci_vol/bci_nvidia_vol.csv |
+| fred_md_t1 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t1.csv |
+| fred_md_t10 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t10.csv |
+| fred_md_t11 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t11.csv |
+| fred_md_t12 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t12.csv |
+| fred_md_t13 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t13.csv |
+| fred_md_t14 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t14.csv |
+| fred_md_t15 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t15.csv |
+| fred_md_t16 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t16.csv |
+| fred_md_t17 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t17.csv |
+| fred_md_t18 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t18.csv |
+| fred_md_t19 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t19.csv |
+| fred_md_t2 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t2.csv |
+| fred_md_t20 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t20.csv |
+| fred_md_t21 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t21.csv |
+| fred_md_t22 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t22.csv |
+| fred_md_t23 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t23.csv |
+| fred_md_t24 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t24.csv |
+| fred_md_t25 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t25.csv |
+| fred_md_t26 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t26.csv |
+| fred_md_t27 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t27.csv |
+| fred_md_t28 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t28.csv |
+| fred_md_t29 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t29.csv |
+| fred_md_t3 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t3.csv |
+| fred_md_t30 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t30.csv |
+| fred_md_t31 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t31.csv |
+| fred_md_t32 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t32.csv |
+| fred_md_t33 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t33.csv |
+| fred_md_t34 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t34.csv |
+| fred_md_t35 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t35.csv |
+| fred_md_t36 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t36.csv |
+| fred_md_t37 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t37.csv |
+| fred_md_t38 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t38.csv |
+| fred_md_t39 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t39.csv |
+| fred_md_t4 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t4.csv |
+| fred_md_t40 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t40.csv |
+| fred_md_t41 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t41.csv |
+| fred_md_t42 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t42.csv |
+| fred_md_t43 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t43.csv |
+| fred_md_t44 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t44.csv |
+| fred_md_t45 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t45.csv |
+| fred_md_t46 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t46.csv |
+| fred_md_t47 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t47.csv |
+| fred_md_t48 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t48.csv |
+| fred_md_t49 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t49.csv |
+| fred_md_t5 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t5.csv |
+| fred_md_t50 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t50.csv |
+| fred_md_t6 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t6.csv |
+| fred_md_t7 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t7.csv |
+| fred_md_t8 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t8.csv |
+| fred_md_t9 | FRED-MD | 728 | S | 60 | 30 | 12 | m | time_series_library/dataset/new_benchmarks/fred_md/fred_md_t9.csv |
